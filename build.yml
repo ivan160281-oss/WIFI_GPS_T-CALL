@@ -1,0 +1,48 @@
+name: Build ALTGEO GSM tracker firmware
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+
+      - name: Add ESP32 board index
+        run: |
+          ./bin/arduino-cli config init
+          ./bin/arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_dev_index.json
+
+      - name: Update index and install ESP32 core 3.3.10 (stable)
+        run: |
+          ./bin/arduino-cli core update-index
+          ./bin/arduino-cli core install esp32:esp32@3.3.10
+
+      - name: Install libraries (TinyGSM, ArduinoHttpClient, ArduinoJson)
+        run: |
+          mkdir -p ~/Arduino/libraries
+          ./bin/arduino-cli lib install "TinyGSM"
+          ./bin/arduino-cli lib install "ArduinoHttpClient"
+          ./bin/arduino-cli lib install "ArduinoJson"
+
+      - name: Compile (T-Call A7670, generic ESP32 fqbn)
+        run: |
+          ./bin/arduino-cli compile \
+            --fqbn esp32:esp32:esp32 \
+            --export-binaries \
+            altgeo_gsm_tracker
+
+      - name: Upload compiled binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: altgeo-gsm-tracker-bin
+          path: altgeo_gsm_tracker/build/esp32.esp32.esp32/*.bin
