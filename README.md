@@ -77,7 +77,7 @@ own reference firmware (`LilyGO-T-A76XX/examples/*/utilities.h`):
 | Modem PWRKEY | GPIO 4 |
 | Modem DTR | GPIO 14 |
 | Modem RESET | GPIO 27 |
-| Status LED | GPIO 12 |
+| Status LED | GPIO 12 (see «LED status» below) |
 
 **Double-check these against your specific board revision's silkscreen
 before flashing a whole batch** - LilyGO has shipped more than one pin
@@ -185,3 +185,11 @@ Before flashing a whole batch of devices, specifically verify:
   the server will still store, just without a meaningful absolute time
   until this is confirmed working (or replaced with NTP-over-GPRS as a
   fallback).
+
+## LED status
+
+| Pattern | Meaning |
+|---|---|
+| 1 blink in a second, then 2 s dark | Working: the last exchange with the server went both ways |
+| 3 blinks in a second, then 2 s dark | No GSM network / data connection, or the server can't be reached (also right after power-on, until the first exchange) |
+| 5 blinks a second, without a pause | Data was sent, but no proper answer came back (timeout or server error) |

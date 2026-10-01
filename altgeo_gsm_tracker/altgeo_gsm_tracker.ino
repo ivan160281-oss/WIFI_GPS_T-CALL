@@ -124,10 +124,60 @@ BleSighting bleSightings[MAX_BLE_SIGHTINGS];
 int bleSightingCount = 0;
 
 // ---------------------------------------------------------------------------
-// LED heartbeat (the only feedback this device has - no screen). A slow
-// blink means "running, no GSM yet"; a quick double-blink on each
-// successful sync flash means "everything's working end to end".
+// Status LED (the only feedback this device has - no screen). A separate
+// FreeRTOS task blinks it, so the pattern keeps its rhythm while loop() is
+// busy in a WiFi/BLE scan or an HTTP request:
+//   LINK_OK         1 blink in a second, then 2 s dark - the last exchange
+//                   with the server went both ways (sent, 200 + acks back)
+//   LINK_NO_NETWORK 3 blinks in a second, then 2 s dark - no GSM network /
+//                   no data connection, or the server can't be reached
+//                   (also the state from power-on until the first exchange)
+//   LINK_NO_REPLY   5 blinks a second, without a pause - data was sent but
+//                   no proper answer came back (timeout, error, bad JSON)
 // ---------------------------------------------------------------------------
+enum LinkState : uint8_t { LINK_NO_NETWORK, LINK_NO_REPLY, LINK_OK };
+static volatile LinkState linkState = LINK_NO_NETWORK;
+
+#define LED_PAUSE_MS              2000
+#define LINK_CHECK_INTERVAL_MS    5000UL
+
+static void ledBurst(int times, int windowMs) {
+    int half = windowMs / times / 2;
+    for (int i = 0; i < times; i++) {
+        digitalWrite(BOARD_LED_PIN, LED_ON);
+        vTaskDelay(pdMS_TO_TICKS(half));
+        digitalWrite(BOARD_LED_PIN, !LED_ON);
+        vTaskDelay(pdMS_TO_TICKS(half));
+    }
+}
+
+static void ledTask(void *) {
+    for (;;) {
+        switch (linkState) {
+            case LINK_OK:
+                ledBurst(1, 1000);
+                vTaskDelay(pdMS_TO_TICKS(LED_PAUSE_MS));
+                break;
+            case LINK_NO_NETWORK:
+                ledBurst(3, 1000);
+                vTaskDelay(pdMS_TO_TICKS(LED_PAUSE_MS));
+                break;
+            case LINK_NO_REPLY:
+                ledBurst(5, 1000);  // continuous: no pause
+                break;
+        }
+    }
+}
+
+static void setLinkState(LinkState state) {
+    if (linkState != state) {
+        static const char *names[] = {"no network / server unreachable", "no reply from server", "ok"};
+        Serial.printf("Link state: %s\n", names[state]);
+    }
+    linkState = state;
+}
+
+// Blocking blink, only used before the LED task runs (fatal storage error).
 static void ledPulse(int times, int onMs, int offMs) {
     for (int i = 0; i < times; i++) {
         digitalWrite(BOARD_LED_PIN, LED_ON);
@@ -438,7 +488,7 @@ static void trySyncQueue() {
     if (!check || check.size() == 0) { if (check) check.close(); return; }
     check.close();
 
-    if (!ensureGprsConnected()) return;
+    if (!ensureGprsConnected()) { setLinkState(LINK_NO_NETWORK); return; }
 
     uint32_t batchSeqs[SYNC_BATCH_SIZE];
     int batchCount = 0;
@@ -446,7 +496,13 @@ static void trySyncQueue() {
     if (batchCount == 0) return;
 
     http.beginRequest();
-    http.post(ALTGEO_SERVER_PATH);
+    if (http.post(ALTGEO_SERVER_PATH) != 0) {
+        // TCP connection to the server failed - nothing was sent.
+        http.stop();
+        Serial.println("Cannot reach the server - will retry next cycle.");
+        setLinkState(LINK_NO_NETWORK);
+        return;
+    }
     http.sendHeader("Content-Type", "application/json");
     http.sendHeader("X-Device-IMEI", deviceImei);
     http.sendHeader("X-Sync-Password", ALTGEO_SYNC_PASSWORD);
@@ -460,7 +516,9 @@ static void trySyncQueue() {
     http.stop();
 
     if (status != 200) {
+        // Negative = timeout or garbled reply; any other code = server error.
         Serial.printf("Sync failed, HTTP %d - will retry next cycle.\n", status);
+        setLinkState(LINK_NO_REPLY);
         return;
     }
 
@@ -468,6 +526,7 @@ static void trySyncQueue() {
     DeserializationError err = deserializeJson(doc, response);
     if (err) {
         Serial.println("Sync response was not valid JSON - leaving queue as-is.");
+        setLinkState(LINK_NO_REPLY);
         return;
     }
 
@@ -479,7 +538,7 @@ static void trySyncQueue() {
     }
     removeAckedFromQueue(ackedSeqs, ackedCount);
     Serial.printf("Sync ok - %d point(s) acknowledged and cleared from queue.\n", ackedCount);
-    ledPulse(2, 80, 80);
+    setLinkState(LINK_OK);
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +557,7 @@ void setup() {
         Serial.println("Cannot continue without local storage - halting.");
         while (true) { ledPulse(1, 60, 940); }
     }
+    xTaskCreate(ledTask, "led", 2048, nullptr, 1, nullptr);
 
     if (!powerOnModem()) {
         Serial.println("Modem did not respond - will keep retrying in the background.");
@@ -526,10 +586,12 @@ void loop() {
         trySyncQueue();
     }
 
-    if (!modem.isGprsConnected() && !modem.isNetworkConnected()) {
-        digitalWrite(BOARD_LED_PIN, (now / 1000) % 2 == 0 ? LED_ON : !LED_ON);  // slow blink = no signal yet
-    } else {
-        digitalWrite(BOARD_LED_PIN, !LED_ON);
+    // Losing the network between syncs shows on the LED without waiting for
+    // the next sync attempt. Asks the modem only every few seconds.
+    static unsigned long lastLinkCheckMs = 0;
+    if (now - lastLinkCheckMs >= LINK_CHECK_INTERVAL_MS) {
+        lastLinkCheckMs = now;
+        if (!modem.isNetworkConnected()) setLinkState(LINK_NO_NETWORK);
     }
 
     delay(200);
