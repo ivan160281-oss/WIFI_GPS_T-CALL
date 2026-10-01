@@ -59,7 +59,7 @@
 // CONFIGURE BEFORE FLASHING - the only things that differ between "your
 // server" and anyone else's. Everything past this block is generic.
 // ---------------------------------------------------------------------------
-#define ALTGEO_SERVER_HOST   "mc.itprime.ru"   // no scheme, no path - just the host
+#define ALTGEO_SERVER_HOST   "altgeo.su"       // no scheme, no path - just the host
 #define ALTGEO_SERVER_PORT   80                // 80 for plain HTTP, 443 if you switch to TinyGsmClientSecure
 #define ALTGEO_SERVER_PATH   "/api/device/points"
 #define ALTGEO_SYNC_PASSWORD "407028109"       // must match the server's WIFIGPS_PASSWORD
