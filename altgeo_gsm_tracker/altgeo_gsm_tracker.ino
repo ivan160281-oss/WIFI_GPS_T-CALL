@@ -363,6 +363,7 @@ static String scanBleToJsonArray() {
 // the SD-card tracker's log format)
 // ---------------------------------------------------------------------------
 static void captureAndQueuePoint() {
+    Serial.printf("[%lus] Capturing a point (GPS, WiFi, BLE)...\n", millis() / 1000UL);
     float lat = 0, lon = 0, speed = 0, alt = 0;
     int vsat = 0, usat = 0;
     bool haveFix = modem.getGPS(&lat, &lon, &speed, &alt, &vsat, &usat);
@@ -485,7 +486,8 @@ static void removeAckedFromQueue(uint32_t ackedSeqs[], int ackedCount) {
 
 static void trySyncQueue() {
     File check = LittleFS.open(QUEUE_FILE, "r");
-    if (!check || check.size() == 0) { if (check) check.close(); return; }
+    if (!check || check.size() == 0) { if (check) check.close(); Serial.printf("[%lus] Sync: queue empty\n", millis() / 1000UL); return; }
+    Serial.printf("[%lus] Sync: %u bytes queued\n", millis() / 1000UL, (unsigned)check.size());
     check.close();
 
     if (!ensureGprsConnected()) { setLinkState(LINK_NO_NETWORK); return; }
@@ -495,6 +497,8 @@ static void trySyncQueue() {
     String body = buildSyncBatch(batchSeqs, batchCount);
     if (batchCount == 0) return;
 
+    Serial.printf("[%lus] Sync: connecting to %s:%d, %d point(s), %u bytes\n", millis() / 1000UL,
+                  ALTGEO_SERVER_HOST, ALTGEO_SERVER_PORT, batchCount, (unsigned)body.length());
     http.beginRequest();
     if (http.post(ALTGEO_SERVER_PATH) != 0) {
         // TCP connection to the server failed - nothing was sent.
@@ -510,10 +514,13 @@ static void trySyncQueue() {
     http.beginBody();
     http.print(body);
     http.endRequest();
+    Serial.printf("[%lus] Sync: request sent, waiting for the reply\n", millis() / 1000UL);
 
     int status = http.responseStatusCode();
     String response = http.responseBody();
     http.stop();
+    Serial.printf("[%lus] Sync: HTTP %d, reply %u bytes: %.120s\n", millis() / 1000UL, status,
+                  (unsigned)response.length(), response.c_str());
 
     if (status != 200) {
         // Negative = timeout or garbled reply; any other code = server error.
@@ -570,6 +577,8 @@ void setup() {
 
     lastPointMs = millis();
     lastSyncMs = millis();
+    // Never wait longer than this for the server's answer (the library default is 30 s).
+    http.setHttpResponseTimeout(20000);
     Serial.println("Setup complete - running autonomously.");
 }
 
@@ -591,7 +600,13 @@ void loop() {
     static unsigned long lastLinkCheckMs = 0;
     if (now - lastLinkCheckMs >= LINK_CHECK_INTERVAL_MS) {
         lastLinkCheckMs = now;
-        if (!modem.isNetworkConnected()) setLinkState(LINK_NO_NETWORK);
+        bool net = modem.isNetworkConnected();
+        if (!net) setLinkState(LINK_NO_NETWORK);
+        static uint8_t beat = 0;
+        if (++beat % 6 == 0) {  // every ~30 s: proves the loop is alive in the serial log
+            Serial.printf("[%lus] Alive: GSM network %s, signal %d, data %s\n", millis() / 1000UL,
+                          net ? "yes" : "no", modem.getSignalQuality(), modem.isGprsConnected() ? "yes" : "no");
+        }
     }
 
     delay(200);
